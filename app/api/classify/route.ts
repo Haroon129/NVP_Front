@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
+function sleep(ms: number) {
+    return new Promise((r) => setTimeout(r, ms));
+}
+
 export async function POST(req: NextRequest) {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
@@ -11,9 +15,11 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    const originalName = file.name;
+    await sleep(900);
 
-    const fakeTranscription = `Ejemplo de transcripción para la imagen ${originalName}`;
-
-    return NextResponse.json({ transcription: fakeTranscription });
+    // mock de transcripción
+    return NextResponse.json({
+        transcription: "HOLA (mock)",
+        meta: { filename: file.name, size: file.size, type: file.type },
+    });
 }
