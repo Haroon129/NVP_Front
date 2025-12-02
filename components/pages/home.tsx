@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCamera } from "@/components/camera/useCamera";
 import { useHandTracking } from "@/components/camera/useHandTracking";
-import { useCropPreview } from "@/components/camera/useCropPreview";
 import { CameraView } from "@/components/camera/CameraView";
 import { CameraControls } from "@/components/camera/CameraControls";
 import { HandStatus } from "@/components/camera/HandStatus";
@@ -21,20 +20,29 @@ export default function HomePage() {
     } = useCamera();
 
     const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-    const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
-    const { handDetected, handStable, boxPxRef } = useHandTracking(
+    const { handDetected, handStable, handSessionId, boxPxRef } = useHandTracking(
         videoRef,
         overlayCanvasRef,
         isCameraOn
     );
 
-    useCropPreview(videoRef, previewCanvasRef, boxPxRef, isCameraOn);
-
     const [transcription, setTranscription] = useState<string | null>(null);
     const [isSending, setIsSending] = useState(false);
     const [countdown, setCountdown] = useState<number | null>(null);
-    const cooldownUntilRef = useRef<number>(0);
+
+    const [lastCaptureUrl, setLastCaptureUrl] = useState<string | null>(null);
+    const lastCaptureUrlRef = useRef<string | null>(null);
+
+    // Para no capturar dos veces en la misma “mano”
+    const capturedSessionRef = useRef<number>(0);
+
+    // Limpieza de objectURL para no “filtrar” memoria
+    useEffect(() => {
+        return () => {
+            if (lastCaptureUrlRef.current) URL.revokeObjectURL(lastCaptureUrlRef.current);
+        };
+    }, []);
 
     const handleToggleCamera = () => {
         if (isCameraOn) stopCamera();
@@ -42,61 +50,69 @@ export default function HomePage() {
     };
 
     const sendPhotoToBackend = useCallback(async () => {
-        // 👇 aquí recortamos SOLO la mano
         const blob = await captureCroppedPhoto(boxPxRef.current, 512);
         if (!blob) return;
+
+        // ✅ Congelar preview con ESTA captura (la misma enviada)
+        const nextUrl = URL.createObjectURL(blob);
+        if (lastCaptureUrlRef.current) URL.revokeObjectURL(lastCaptureUrlRef.current);
+        lastCaptureUrlRef.current = nextUrl;
+        setLastCaptureUrl(nextUrl);
 
         setIsSending(true);
         setTranscription(null);
 
         const uniqueName = `hand-${Date.now()}-${crypto.randomUUID()}.jpg`;
-
         const formData = new FormData();
         formData.append("file", blob, uniqueName);
 
         try {
-            const res = await fetch("/api/classify", {
-                method: "POST",
-                body: formData,
-            });
+            const res = await fetch("/api/classify", { method: "POST", body: formData });
             if (!res.ok) throw new Error("Error al procesar la imagen");
-
             const data = await res.json();
             setTranscription(data.transcription ?? "Sin resultados.");
         } catch (err) {
             console.error(err);
             setTranscription("Ocurrió un error al clasificar la imagen.");
         } finally {
-            cooldownUntilRef.current = Date.now() + 2000;
             setIsSending(false);
         }
     }, [captureCroppedPhoto, boxPxRef]);
 
-    // Inicia countdown al estar estable
+    // ✅ Armar countdown SOLO si hay mano NUEVA (handSessionId) y aún no capturada
     useEffect(() => {
         if (!isCameraOn) {
             setCountdown(null);
             return;
         }
 
-        const now = Date.now();
-        if (now < cooldownUntilRef.current) return;
-
         const busy = isSending || isTakingPhoto;
         if (busy) return;
 
+        // si no hay mano / no estable, cancelamos countdown
         if (!handDetected || !handStable) {
             if (countdown !== null) setCountdown(null);
             return;
         }
 
+        // ✅ si esta sesión ya fue capturada, NO hacemos nada
+        if (handSessionId !== 0 && capturedSessionRef.current === handSessionId) {
+            if (countdown !== null) setCountdown(null);
+            return;
+        }
+
         if (countdown === null) setCountdown(3);
-    }, [isCameraOn, handDetected, handStable, isSending, isTakingPhoto, countdown]);
+    }, [isCameraOn, handDetected, handStable, handSessionId, isSending, isTakingPhoto, countdown]);
 
     useEffect(() => {
         if (countdown === null) return;
+
         if (countdown <= 0) {
             setCountdown(null);
+
+            // ✅ marcamos esta sesión como “capturada” antes de enviar (evita dobles disparos)
+            capturedSessionRef.current = handSessionId;
+
             void sendPhotoToBackend();
             return;
         }
@@ -106,7 +122,7 @@ export default function HomePage() {
         }, 1000);
 
         return () => window.clearTimeout(t);
-    }, [countdown, sendPhotoToBackend]);
+    }, [countdown, sendPhotoToBackend, handSessionId]);
 
     const busy = isSending || isTakingPhoto;
 
@@ -125,7 +141,7 @@ export default function HomePage() {
                             isBusy={busy}
                         />
 
-                        <CropPreview previewCanvasRef={previewCanvasRef} />
+                        <CropPreview lastCaptureUrl={lastCaptureUrl} />
                     </div>
 
                     <CameraControls isCameraOn={isCameraOn} onToggleCamera={handleToggleCamera} />

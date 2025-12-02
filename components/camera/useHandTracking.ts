@@ -10,12 +10,13 @@ function clamp01(v: number) {
 }
 
 export function useHandTracking(
-    videoRef: React.RefObject<HTMLVideoElement>,
-    overlayCanvasRef: React.RefObject<HTMLCanvasElement>,
+    videoRef: React.RefObject<HTMLVideoElement | null>,
+    overlayCanvasRef: React.RefObject<HTMLCanvasElement | null>,
     enabled: boolean
 ) {
     const [handDetected, setHandDetected] = useState(false);
     const [handStable, setHandStable] = useState(false);
+    const [handSessionId, setHandSessionId] = useState(0);
 
     // bbox en pixeles del frame (para recortar y enviar al backend)
     const boxPxRef = useRef<CropBoxPx | null>(null);
@@ -30,6 +31,7 @@ export function useHandTracking(
     const lastStableRef = useRef(false);
 
     const tsRef = useRef(0);
+    const sessionIdRef = useRef(0);
 
     useEffect(() => {
         if (!enabled) {
@@ -40,6 +42,10 @@ export function useHandTracking(
             stableFramesRef.current = 0;
             tsRef.current = 0;
 
+            // No reseteamos sessionIdRef / handSessionId: permite mantener lógica de “última captura”
+            lastDetectedRef.current = false;
+            lastStableRef.current = false;
+
             // limpia overlay
             const c = overlayCanvasRef.current;
             if (c) c.getContext("2d")?.clearRect(0, 0, c.width, c.height);
@@ -49,6 +55,7 @@ export function useHandTracking(
         const video = videoRef.current;
         const overlay = overlayCanvasRef.current;
         if (!video || !overlay) return;
+
 
         let cancelled = false;
 
@@ -64,6 +71,7 @@ export function useHandTracking(
                 baseOptions: {
                     modelAssetPath:
                         "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                    // delegate: "GPU", // opcional (si te va estable)
                 },
                 runningMode: "VIDEO",
                 numHands: 1,
@@ -72,8 +80,8 @@ export function useHandTracking(
                 minTrackingConfidence: 0.7,
             });
 
-            const MOVE_THRESHOLD = 0.01;
-            const STABLE_FRAMES_NEEDED = 15;
+            const MOVE_THRESHOLD = 0.01; // más bajo = exige más quietud
+            const STABLE_FRAMES_NEEDED = 15; // ~0.5s si ~30fps
 
             const loop = () => {
                 if (cancelled) return;
@@ -89,7 +97,7 @@ export function useHandTracking(
                     return;
                 }
 
-                // sync canvas con tamaño visual (para overlay nítido)
+                // sync overlay canvas para que se vea nítido
                 const dpr = window.devicePixelRatio || 1;
                 const cw = Math.max(1, Math.floor(video.clientWidth * dpr));
                 const ch = Math.max(1, Math.floor(video.clientHeight * dpr));
@@ -104,7 +112,7 @@ export function useHandTracking(
                     return;
                 }
 
-                // timestamp monotónico
+                // timestamp monotónico (algunos runtimes lo requieren)
                 const now = Math.floor(performance.now());
                 tsRef.current = Math.max(tsRef.current + 1, now);
 
@@ -140,13 +148,22 @@ export function useHandTracking(
                     return;
                 }
 
+                // ✅ NUEVO: transición NO→SÍ = “nueva mano” (nueva sesión)
+                if (lastDetectedRef.current === false) {
+                    sessionIdRef.current += 1;
+                    setHandSessionId(sessionIdRef.current);
+                }
+
                 if (lastDetectedRef.current !== true) {
                     lastDetectedRef.current = true;
                     setHandDetected(true);
                 }
 
                 // bbox normalizado (0..1)
-                let minX = 1, minY = 1, maxX = 0, maxY = 0;
+                let minX = 1,
+                    minY = 1,
+                    maxX = 0,
+                    maxY = 0;
                 for (const p of lm!) {
                     minX = Math.min(minX, p.x);
                     minY = Math.min(minY, p.y);
@@ -154,14 +171,15 @@ export function useHandTracking(
                     maxY = Math.max(maxY, p.y);
                 }
 
-                // padding alrededor de la mano (ajustable)
+                // padding alrededor de la mano
                 const pad = 0.12;
-                const w = maxX - minX;
-                const h = maxY - minY;
-                minX = clamp01(minX - w * pad);
-                minY = clamp01(minY - h * pad);
-                maxX = clamp01(maxX + w * pad);
-                maxY = clamp01(maxY + h * pad);
+                const bw = maxX - minX;
+                const bh = maxY - minY;
+
+                minX = clamp01(minX - bw * pad);
+                minY = clamp01(minY - bh * pad);
+                maxX = clamp01(maxX + bw * pad);
+                maxY = clamp01(maxY + bh * pad);
 
                 // centro para estabilidad
                 const center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
@@ -183,13 +201,14 @@ export function useHandTracking(
                     else stableFramesRef.current = 0;
 
                     const isStable = stableFramesRef.current >= STABLE_FRAMES_NEEDED;
+
                     if (lastStableRef.current !== isStable) {
                         lastStableRef.current = isStable;
                         setHandStable(isStable);
                     }
                 }
 
-                // guarda bbox en pixeles del frame (para recortar)
+                // guarda bbox en pixeles del frame (para recortar y enviar)
                 boxPxRef.current = {
                     x: minX * video.videoWidth,
                     y: minY * video.videoHeight,
@@ -197,7 +216,7 @@ export function useHandTracking(
                     height: (maxY - minY) * video.videoHeight,
                 };
 
-                // dibuja rectángulo en overlay (coordenadas de pantalla)
+                // dibuja bbox en overlay (coordenadas de pantalla)
                 const sx = video.clientWidth;
                 const sy = video.clientHeight;
 
@@ -206,9 +225,8 @@ export function useHandTracking(
                 const rw = (maxX - minX) * sx;
                 const rh = (maxY - minY) * sy;
 
-                // en canvas usamos dpr
                 ctx.lineWidth = 3 * dpr;
-                ctx.strokeStyle = lastStableRef.current ? "#22c55e" : "#f59e0b"; // verde estable / naranja moviendo
+                ctx.strokeStyle = lastStableRef.current ? "#22c55e" : "#f59e0b"; // verde/ambar
                 ctx.strokeRect(rx * dpr, ry * dpr, rw * dpr, rh * dpr);
 
                 rafRef.current = requestAnimationFrame(loop);
@@ -228,6 +246,7 @@ export function useHandTracking(
             prevCenterRef.current = null;
             stableFramesRef.current = 0;
             tsRef.current = 0;
+
             lastDetectedRef.current = false;
             lastStableRef.current = false;
 
@@ -241,5 +260,5 @@ export function useHandTracking(
         };
     }, [enabled, videoRef, overlayCanvasRef]);
 
-    return { handDetected, handStable, boxPxRef };
+    return { handDetected, handStable, handSessionId, boxPxRef };
 }

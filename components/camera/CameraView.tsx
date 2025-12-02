@@ -1,8 +1,8 @@
 "use client";
 
 type Props = {
-    videoRef: React.RefObject<HTMLVideoElement>;
-    overlayCanvasRef: React.RefObject<HTMLCanvasElement>;
+    videoRef: React.RefObject<HTMLVideoElement | null>;
+    overlayCanvasRef: React.RefObject<HTMLCanvasElement | null>;
 };
 
 export function CameraView({ videoRef, overlayCanvasRef }: Props) {
@@ -16,7 +16,6 @@ export function CameraView({ videoRef, overlayCanvasRef }: Props) {
                 muted
             />
 
-            {/* Canvas overlay (rectángulo mano) */}
             <canvas
                 ref={overlayCanvasRef}
                 className="absolute inset-0 w-full h-full pointer-events-none"

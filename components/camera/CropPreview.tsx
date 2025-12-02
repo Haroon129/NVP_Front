@@ -3,25 +3,33 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 type Props = {
-    previewCanvasRef: React.RefObject<HTMLCanvasElement>;
+    lastCaptureUrl: string | null;
 };
 
-export function CropPreview({ previewCanvasRef }: Props) {
+export function CropPreview({ lastCaptureUrl }: Props) {
     return (
         <Card className="mt-4">
             <CardHeader className="py-4">
-                <CardTitle className="text-base">Área que se enviará al backend</CardTitle>
+                <CardTitle className="text-base">Última mano enviada al backend</CardTitle>
             </CardHeader>
             <CardContent className="pb-4">
-                <div className="flex items-center gap-4">
-                    <canvas
-                        ref={previewCanvasRef}
-                        className="rounded-lg border bg-muted"
-                    />
+                {lastCaptureUrl ? (
+                    <div className="flex items-center gap-4">
+                        <img
+                            src={lastCaptureUrl}
+                            alt="Última mano capturada"
+                            className="h-[220px] w-[220px] rounded-lg border object-cover bg-muted"
+                        />
+                        <p className="text-sm text-muted-foreground">
+                            Esta imagen es la última que se recortó y se envió. No se guarda en disco,
+                            solo está en memoria para previsualización.
+                        </p>
+                    </div>
+                ) : (
                     <p className="text-sm text-muted-foreground">
-                        Este recorte es exactamente lo que se enviará (sin guardar nada en el navegador).
+                        Aún no hay ninguna captura enviada.
                     </p>
-                </div>
+                )}
             </CardContent>
         </Card>
     );
