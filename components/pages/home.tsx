@@ -68,13 +68,26 @@ export default function HomePage() {
 
         try {
             const res = await fetch("/api/classify", { method: "POST", body: formData });
-            if (!res.ok) throw new Error("Error al procesar la imagen");
-            const data = await res.json();
-            setTranscription(data.transcription ?? "Sin resultados.");
+
+            const contentType = res.headers.get("content-type") ?? "";
+            const payload = contentType.includes("application/json")
+                ? await res.json().catch(() => null)
+                : await res.text().catch(() => null);
+
+            if (!res.ok) {
+                console.error("API /api/classify error:", res.status, payload);
+                throw new Error(
+                    (payload && typeof payload === "object" && (payload.error || payload.details)) ||
+                    `Error ${res.status} en /api/classify`
+                );
+            }
+
+            setTranscription(payload?.transcription ?? "Sin resultados.");
         } catch (err) {
             console.error(err);
-            setTranscription("Ocurrió un error al clasificar la imagen.");
-        } finally {
+            setTranscription(String((err as any)?.message ?? "Ocurrió un error al clasificar la imagen."));
+        }
+        finally {
             setIsSending(false);
         }
     }, [captureCroppedPhoto, boxPxRef]);
