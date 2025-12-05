@@ -1,73 +1,86 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useCamera } from "@/components/camera/useCamera";
-import { useHandTracking } from "@/components/camera/useHandTracking";
-import { CameraView } from "@/components/camera/CameraView";
-import { CameraControls } from "@/components/camera/CameraControls";
-import { HandStatus } from "@/components/camera/HandStatus";
-import { CropPreview } from "@/components/camera/CropPreview";
-import { TranscriptionBox } from "@/components/textBox/TranscriptionBox";
+import { useCallback, useEffect, useState } from "react";
+import { useCamera, CropBoxNorm } from "../camera/useCamera";
+import { CameraView } from "../camera/CameraView";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+// Recuadro normalizado (0..1) que debe coincidir visualmente con el cuadro verde de CameraView
+const ROI_BOX: CropBoxNorm = {
+    x: 0.2,   // 20% desde la izquierda
+    y: 0.125, // 12.5% desde arriba
+    width: 0.6,
+    height: 0.75,
+};
 
 export default function HomePage() {
     const {
         videoRef,
         isCameraOn,
-        isTakingPhoto,
+        error: cameraError,
         startCamera,
         stopCamera,
-        captureCroppedPhoto,
+        capturePhotoInBox,
     } = useCamera();
 
-    const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-
-    const { handDetected, handStable, handSessionId, boxPxRef } = useHandTracking(
-        videoRef,
-        overlayCanvasRef,
-        isCameraOn
-    );
-
-    const [transcription, setTranscription] = useState<string | null>(null);
     const [isSending, setIsSending] = useState(false);
-    const [countdown, setCountdown] = useState<number | null>(null);
+    const [transcription, setTranscription] = useState<string | null>(null);
+    const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-    const [lastCaptureUrl, setLastCaptureUrl] = useState<string | null>(null);
-    const lastCaptureUrlRef = useRef<string | null>(null);
-
-    // Para no capturar dos veces en la misma “mano”
-    const capturedSessionRef = useRef<number>(0);
-
-    // Limpieza de objectURL para no “filtrar” memoria
+    // Limpia el objectURL anterior cuando cambie
     useEffect(() => {
         return () => {
-            if (lastCaptureUrlRef.current) URL.revokeObjectURL(lastCaptureUrlRef.current);
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
         };
-    }, []);
+    }, [previewUrl]);
 
-    const handleToggleCamera = () => {
-        if (isCameraOn) stopCamera();
-        else startCamera();
-    };
+    const handleToggleCamera = useCallback(() => {
+        if (isCameraOn) {
+            stopCamera();
+        } else {
+            void startCamera();
+        }
+    }, [isCameraOn, startCamera, stopCamera]);
 
-    const sendPhotoToBackend = useCallback(async () => {
-        const blob = await captureCroppedPhoto(boxPxRef.current, 512);
-        if (!blob) return;
-
-        // ✅ Congelar preview con ESTA captura (la misma enviada)
-        const nextUrl = URL.createObjectURL(blob);
-        if (lastCaptureUrlRef.current) URL.revokeObjectURL(lastCaptureUrlRef.current);
-        lastCaptureUrlRef.current = nextUrl;
-        setLastCaptureUrl(nextUrl);
-
-        setIsSending(true);
+    const handleCaptureAndSend = useCallback(async () => {
+        setErrorMsg(null);
         setTranscription(null);
 
-        const uniqueName = `hand-${Date.now()}-${crypto.randomUUID()}.jpg`;
-        const formData = new FormData();
-        formData.append("file", blob, uniqueName);
-
         try {
-            const res = await fetch("/api/classify", { method: "POST", body: formData });
+            if (!isCameraOn) {
+                setErrorMsg("La cámara no está encendida.");
+                return;
+            }
+
+            setIsSending(true);
+
+            // 1) Capturamos SOLO el área del recuadro ROI
+            const blob = await capturePhotoInBox(ROI_BOX);
+            if (!blob) {
+                setErrorMsg("No se pudo capturar la imagen. Inténtalo de nuevo.");
+                setIsSending(false);
+                return;
+            }
+
+            // 2) Mostramos preview (última mano capturada)
+            const url = URL.createObjectURL(blob);
+            setPreviewUrl((prev) => {
+                if (prev) URL.revokeObjectURL(prev);
+                return url;
+            });
+
+            // 3) Enviamos al backend (igual que antes)
+            const fileName = `hand_${Date.now()}.jpg`;
+            const formData = new FormData();
+            formData.append("file", blob, fileName);
+
+            const res = await fetch("/api/classify", {
+                method: "POST",
+                body: formData,
+            });
 
             const contentType = res.headers.get("content-type") ?? "";
             const payload = contentType.includes("application/json")
@@ -75,93 +88,105 @@ export default function HomePage() {
                 : await res.text().catch(() => null);
 
             if (!res.ok) {
-                console.error("API /api/classify error:", res.status, payload);
-                throw new Error(
-                    (payload && typeof payload === "object" && (payload.error || payload.details)) ||
-                    `Error ${res.status} en /api/classify`
+                console.error("Error /api/classify:", res.status, payload);
+                setErrorMsg(
+                    typeof payload === "object" && payload?.error
+                        ? payload.error
+                        : `Error al procesar la imagen (status ${res.status})`
                 );
+                setIsSending(false);
+                return;
             }
 
-            setTranscription(payload?.transcription ?? "Sin resultados.");
-        } catch (err) {
+            const transcriptionText =
+                (payload as any)?.transcription ??
+                (payload as any)?.prediccion ??
+                "Sin resultados.";
+
+            setTranscription(String(transcriptionText));
+        } catch (err: any) {
             console.error(err);
-            setTranscription(String((err as any)?.message ?? "Ocurrió un error al clasificar la imagen."));
-        }
-        finally {
+            setErrorMsg(String(err?.message ?? "Error al procesar la imagen."));
+        } finally {
             setIsSending(false);
         }
-    }, [captureCroppedPhoto, boxPxRef]);
-
-    // ✅ Armar countdown SOLO si hay mano NUEVA (handSessionId) y aún no capturada
-    useEffect(() => {
-        if (!isCameraOn) {
-            setCountdown(null);
-            return;
-        }
-
-        const busy = isSending || isTakingPhoto;
-        if (busy) return;
-
-        // si no hay mano / no estable, cancelamos countdown
-        if (!handDetected || !handStable) {
-            if (countdown !== null) setCountdown(null);
-            return;
-        }
-
-        // ✅ si esta sesión ya fue capturada, NO hacemos nada
-        if (handSessionId !== 0 && capturedSessionRef.current === handSessionId) {
-            if (countdown !== null) setCountdown(null);
-            return;
-        }
-
-        if (countdown === null) setCountdown(3);
-    }, [isCameraOn, handDetected, handStable, handSessionId, isSending, isTakingPhoto, countdown]);
-
-    useEffect(() => {
-        if (countdown === null) return;
-
-        if (countdown <= 0) {
-            setCountdown(null);
-
-            // ✅ marcamos esta sesión como “capturada” antes de enviar (evita dobles disparos)
-            capturedSessionRef.current = handSessionId;
-
-            void sendPhotoToBackend();
-            return;
-        }
-
-        const t = window.setTimeout(() => {
-            setCountdown((c) => (c === null ? null : c - 1));
-        }, 1000);
-
-        return () => window.clearTimeout(t);
-    }, [countdown, sendPhotoToBackend, handSessionId]);
-
-    const busy = isSending || isTakingPhoto;
+    }, [capturePhotoInBox, isCameraOn]);
 
     return (
-        <main className="min-h-screen flex flex-col items-center justify-center px-6 py-10">
-            <div className="w-full max-w-5xl">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-8 items-start">
-                    <div>
-                        <CameraView videoRef={videoRef} overlayCanvasRef={overlayCanvasRef} />
+        <div className="min-h-screen w-full bg-background">
+            <main className="mx-auto max-w-5xl px-4 py-8 space-y-8">
+                <header>
+                    <h1 className="text-2xl font-semibold">Captura de mano</h1>
+                    <p className="text-muted-foreground">
+                        Coloca tu mano dentro del recuadro y pulsa{" "}
+                        <span className="font-medium">“Capturar y enviar”</span>. Solo se
+                        enviará al backend la parte del vídeo dentro del recuadro.
+                    </p>
+                </header>
 
-                        <HandStatus
-                            isCameraOn={isCameraOn}
-                            handDetected={handDetected}
-                            handStable={handStable}
-                            countdown={countdown}
-                            isBusy={busy}
-                        />
+                <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-8 items-start">
+                    {/* Columna cámara */}
+                    <div className="space-y-4">
+                        <CameraView videoRef={videoRef} />
 
-                        <CropPreview lastCaptureUrl={lastCaptureUrl} />
+                        <div className="flex flex-wrap gap-3 items-center">
+                            <Button variant={isCameraOn ? "outline" : "default"} onClick={handleToggleCamera}>
+                                {isCameraOn ? "Apagar cámara" : "Encender cámara"}
+                            </Button>
+
+                            <Button
+                                onClick={handleCaptureAndSend}
+                                disabled={!isCameraOn || isSending}
+                            >
+                                {isSending ? "Enviando..." : "Capturar y enviar"}
+                            </Button>
+
+                            {cameraError && (
+                                <span className="text-sm text-red-500">{cameraError}</span>
+                            )}
+                        </div>
                     </div>
 
-                    <CameraControls isCameraOn={isCameraOn} onToggleCamera={handleToggleCamera} />
-                </div>
+                    {/* Columna resultado */}
+                    <div className="space-y-4">
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Última mano capturada</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                {previewUrl ? (
+                                    <img
+                                        src={previewUrl}
+                                        alt="Última captura"
+                                        className="w-full rounded-md border object-contain max-h-64 bg-muted"
+                                    />
+                                ) : (
+                                    <p className="text-sm text-muted-foreground">
+                                        Todavía no se ha capturado ninguna imagen.
+                                    </p>
+                                )}
+                            </CardContent>
+                        </Card>
 
-                <TranscriptionBox text={transcription} isLoading={isSending} />
-            </div>
-        </main>
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Predicción</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                {errorMsg ? (
+                                    <p className="text-sm text-red-500">{errorMsg}</p>
+                                ) : transcription ? (
+                                    <p className="text-lg font-semibold">{transcription}</p>
+                                ) : (
+                                    <p className="text-sm text-muted-foreground">
+                                        Captura una mano para ver la predicción del modelo.
+                                    </p>
+                                )}
+                            </CardContent>
+                        </Card>
+                    </div>
+                </div>
+            </main>
+        </div>
     );
 }

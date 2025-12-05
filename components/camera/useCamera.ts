@@ -1,103 +1,93 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useRef, useState } from "react";
 
-export type CropBoxPx = { x: number; y: number; width: number; height: number };
+export type CropBoxNorm = {
+    x: number;      // 0..1 (izquierda)
+    y: number;      // 0..1 (arriba)
+    width: number;  // 0..1
+    height: number; // 0..1
+};
 
 export function useCamera() {
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const streamRef = useRef<MediaStream | null>(null);
+
     const [isCameraOn, setIsCameraOn] = useState(false);
-    const [isTakingPhoto, setIsTakingPhoto] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     const startCamera = useCallback(async () => {
         try {
+            setError(null);
+
+            if (streamRef.current) {
+                return;
+            }
+
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: "user" },
+                video: {
+                    facingMode: "user",
+                },
                 audio: false,
             });
 
             streamRef.current = stream;
+
             if (videoRef.current) {
                 videoRef.current.srcObject = stream;
-                await videoRef.current.play();
             }
+
             setIsCameraOn(true);
-        } catch (error) {
-            console.error("Error al encender la cámara:", error);
-            alert("No se pudo acceder a la cámara. Revisa los permisos.");
+        } catch (err: any) {
+            console.error("Error al activar la cámara", err);
+            setError("No se pudo acceder a la cámara. Revisa los permisos del navegador.");
+            setIsCameraOn(false);
         }
     }, []);
 
     const stopCamera = useCallback(() => {
-        streamRef.current?.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
+        if (streamRef.current) {
+            streamRef.current.getTracks().forEach((t) => t.stop());
+            streamRef.current = null;
+        }
+        if (videoRef.current) {
+            videoRef.current.srcObject = null;
+        }
         setIsCameraOn(false);
     }, []);
 
-    const capturePhoto = useCallback(async (): Promise<Blob | null> => {
-        if (!videoRef.current) return null;
-
-        setIsTakingPhoto(true);
-        const video = videoRef.current;
-
-        const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
-
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return null;
-
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-        return new Promise((resolve) => {
-            canvas.toBlob(
-                (blob) => {
-                    setIsTakingPhoto(false);
-                    resolve(blob);
-                },
-                "image/jpeg",
-                0.9
-            );
-        });
-    }, []);
-
-    const captureCroppedPhoto = useCallback(
-        async (box: CropBoxPx | null, maxDim = 512): Promise<Blob | null> => {
-            if (!videoRef.current) return null;
-
-            // fallback: si no hay box, manda frame completo
-            if (!box || box.width <= 1 || box.height <= 1) return capturePhoto();
-
-            setIsTakingPhoto(true);
+    const capturePhotoInBox = useCallback(
+        async (box: CropBoxNorm): Promise<Blob | null> => {
             const video = videoRef.current;
+            if (!video) {
+                console.warn("No hay referencia de vídeo para capturar.");
+                return null;
+            }
+            if (video.videoWidth === 0 || video.videoHeight === 0) {
+                console.warn("El vídeo aún no está listo para capturar.");
+                return null;
+            }
 
-            const srcW = video.videoWidth || 640;
-            const srcH = video.videoHeight || 480;
-
-            // clamp por seguridad
-            const x = Math.max(0, Math.min(box.x, srcW - 1));
-            const y = Math.max(0, Math.min(box.y, srcH - 1));
-            const w = Math.max(1, Math.min(box.width, srcW - x));
-            const h = Math.max(1, Math.min(box.height, srcH - y));
-
-            const scale = Math.min(1, maxDim / Math.max(w, h));
-            const outW = Math.max(1, Math.round(w * scale));
-            const outH = Math.max(1, Math.round(h * scale));
+            const sx = box.x * video.videoWidth;
+            const sy = box.y * video.videoHeight;
+            const sw = box.width * video.videoWidth;
+            const sh = box.height * video.videoHeight;
 
             const canvas = document.createElement("canvas");
-            canvas.width = outW;
-            canvas.height = outH;
+            canvas.width = sw;
+            canvas.height = sh;
 
             const ctx = canvas.getContext("2d");
-            if (!ctx) return null;
+            if (!ctx) {
+                console.warn("No se pudo obtener el contexto 2D del canvas.");
+                return null;
+            }
 
-            ctx.drawImage(video, x, y, w, h, 0, 0, outW, outH);
+            ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
 
-            return new Promise((resolve) => {
+            return new Promise<Blob | null>((resolve) => {
                 canvas.toBlob(
                     (blob) => {
-                        setIsTakingPhoto(false);
                         resolve(blob);
                     },
                     "image/jpeg",
@@ -105,22 +95,15 @@ export function useCamera() {
                 );
             });
         },
-        [capturePhoto]
+        []
     );
-
-    useEffect(() => {
-        return () => {
-            streamRef.current?.getTracks().forEach((t) => t.stop());
-        };
-    }, []);
 
     return {
         videoRef,
         isCameraOn,
-        isTakingPhoto,
+        error,
         startCamera,
         stopCamera,
-        capturePhoto,
-        captureCroppedPhoto,
+        capturePhotoInBox,
     };
 }
