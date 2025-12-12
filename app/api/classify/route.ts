@@ -4,7 +4,8 @@ export const runtime = "nodejs";
 
 // En Docker, probablemente será algo como: http://backend:5001/predict
 // En local: http://127.0.0.1:5001/predict
-const PREDICT_URL =  "http://127.0.0.1:5001/predict";
+const PREDICT_URL =
+process.env.PREDICT_URL ?? "http://host.docker.internal:5001/predict";
 
 export async function POST(req: NextRequest) {
     const requestId =

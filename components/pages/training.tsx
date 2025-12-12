@@ -8,10 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
-// Recuadro normalizado (0..1) que debe coincidir visualmente con el cuadro verde de CameraView
 const ROI_BOX: CropBoxNorm = {
-    x: 0.2, // 20% desde la izquierda
-    y: 0.125, // 12.5% desde arriba
+    x: 0.2, 
+    y: 0.125, 
     width: 0.6,
     height: 0.75,
 };

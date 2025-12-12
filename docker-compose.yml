@@ -9,4 +9,5 @@ services:
       NODE_ENV: production
       PORT: 3000
       HOSTNAME: 0.0.0.0
+      PREDICT_URL: http://host.docker.internal:5001/predict
     restart: unless-stopped

@@ -1,25 +1,26 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { CropBoxPx } from "./useCamera";
+import type React from "react";
+import type { CropBoxNorm } from "./useCamera";
 
 export function useCropPreview(
-    videoRef: React.RefObject<HTMLVideoElement>,
-    previewCanvasRef: React.RefObject<HTMLCanvasElement>,
-    boxPxRef: React.RefObject<CropBoxPx | null>,
+    videoRef: React.RefObject<HTMLVideoElement | null>,
+    previewCanvasRef: React.RefObject<HTMLCanvasElement | null>,
+    boxNorm: CropBoxNorm,
     enabled: boolean
 ) {
     const rafRef = useRef<number | null>(null);
 
     useEffect(() => {
+        const canvas = previewCanvasRef.current;
+
         if (!enabled) {
-            const c = previewCanvasRef.current;
-            if (c) c.getContext("2d")?.clearRect(0, 0, c.width, c.height);
+            if (canvas) canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
             return;
         }
 
         const video = videoRef.current;
-        const canvas = previewCanvasRef.current;
         if (!video || !canvas) return;
 
         let cancelled = false;
@@ -28,7 +29,7 @@ export function useCropPreview(
             if (cancelled) return;
 
             const ctx = canvas.getContext("2d");
-            if (!ctx || video.readyState < 2 || video.videoWidth === 0) {
+            if (!ctx || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
                 rafRef.current = requestAnimationFrame(loop);
                 return;
             }
@@ -47,24 +48,20 @@ export function useCropPreview(
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            const box = boxPxRef.current;
-            if (!box) {
-                // placeholder
-                ctx.globalAlpha = 0.6;
-                ctx.fillStyle = "#000";
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                ctx.globalAlpha = 1;
-                rafRef.current = requestAnimationFrame(loop);
-                return;
-            }
+            // Convertimos ROI normalizado a pixeles (relativo al video REAL)
+            const x = Math.round(boxNorm.x * video.videoWidth);
+            const y = Math.round(boxNorm.y * video.videoHeight);
+            const w = Math.round(boxNorm.width * video.videoWidth);
+            const h = Math.round(boxNorm.height * video.videoHeight);
 
-            // recorte y escalado al cuadrado
-            const x = Math.max(0, Math.min(box.x, video.videoWidth - 1));
-            const y = Math.max(0, Math.min(box.y, video.videoHeight - 1));
-            const w = Math.max(1, Math.min(box.width, video.videoWidth - x));
-            const h = Math.max(1, Math.min(box.height, video.videoHeight - y));
+            // clamp de seguridad
+            const cx = Math.max(0, Math.min(x, video.videoWidth - 1));
+            const cy = Math.max(0, Math.min(y, video.videoHeight - 1));
+            const cw2 = Math.max(1, Math.min(w, video.videoWidth - cx));
+            const ch2 = Math.max(1, Math.min(h, video.videoHeight - cy));
 
-            ctx.drawImage(video, x, y, w, h, 0, 0, canvas.width, canvas.height);
+            // Dibujamos el recorte escalado al cuadrado del preview
+            ctx.drawImage(video, cx, cy, cw2, ch2, 0, 0, canvas.width, canvas.height);
 
             rafRef.current = requestAnimationFrame(loop);
         };
@@ -77,5 +74,13 @@ export function useCropPreview(
             rafRef.current = null;
             canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
         };
-    }, [enabled, videoRef, previewCanvasRef, boxPxRef]);
+    }, [
+        enabled,
+        videoRef,
+        previewCanvasRef,
+        boxNorm.x,
+        boxNorm.y,
+        boxNorm.width,
+        boxNorm.height,
+    ]);
 }
